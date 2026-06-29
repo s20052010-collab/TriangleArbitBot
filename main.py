@@ -2,14 +2,10 @@ import asyncio
 import aiohttp
 import logging
 import os
-import json
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════
@@ -18,39 +14,27 @@ logger = logging.getLogger(__name__)
 TG_TOKEN = os.environ.get("ARB_BOT_TOKEN", "")
 CHAT_ID = None
 
-# API ключи бирж (из переменных окружения)
 BINANCE_KEY    = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 BYBIT_KEY      = os.environ.get("BYBIT_API_KEY", "")
 BYBIT_SECRET   = os.environ.get("BYBIT_API_SECRET", "")
 OKX_KEY        = os.environ.get("OKX_API_KEY", "")
 OKX_SECRET     = os.environ.get("OKX_API_SECRET", "")
-OKX_PASSPHRASE = os.environ.get("OKX_PASSPHRASE", "")
 BITGET_KEY     = os.environ.get("BITGET_API_KEY", "")
 BITGET_SECRET  = os.environ.get("BITGET_API_SECRET", "")
 
-# Параметры торговли
-MIN_PROFIT_PCT  = float(os.environ.get("MIN_PROFIT_PCT", "0.3"))   # минимальная прибыль %
-MIN_VOLUME_USDT = float(os.environ.get("MIN_VOLUME_USDT", "100"))  # минимальный объём $
-MAX_TRADE_USDT  = float(os.environ.get("MAX_TRADE_USDT", "500"))   # максимальный объём $
-SCAN_INTERVAL   = int(os.environ.get("SCAN_INTERVAL", "2"))        # секунд между сканами
-
-# Комиссии бирж (maker/taker %)
-FEES = {
-    "Binance": 0.10,
-    "Bybit":   0.10,
-    "OKX":     0.10,
-    "Bitget":  0.10,
+# Параметры (можно менять через команды бота)
+config = {
+    "min_profit_pct":  float(os.environ.get("MIN_PROFIT_PCT", "0.3")),
+    "max_trade_usdt":  float(os.environ.get("MAX_TRADE_USDT", "100")),
+    "scan_interval":   int(os.environ.get("SCAN_INTERVAL", "2")),
+    "simulation_mode": os.environ.get("SIMULATION_MODE", "true").lower() == "true",
 }
 
-# Торговые пары
-SYMBOLS = ["BTC", "ETH", "SOL", "USDT"]
+FEES = {"Binance": 0.10, "Bybit": 0.10, "OKX": 0.10, "Bitget": 0.10}
+SYMBOLS = ["BTC", "ETH", "SOL"]
 QUOTE   = "USDT"
 
-# Режим работы
-SIMULATION_MODE = os.environ.get("SIMULATION_MODE", "true").lower() == "true"
-
-# Статистика
 stats = {
     "scans": 0,
     "signals": 0,
@@ -59,8 +43,6 @@ stats = {
     "errors": 0,
     "start_time": datetime.now(),
 }
-
-# История сделок (в памяти)
 trade_history: List[dict] = []
 
 
@@ -79,14 +61,15 @@ async def send_tg(session, text):
             "parse_mode": "Markdown"
         }, timeout=aiohttp.ClientTimeout(total=10))
     except Exception as e:
-        logger.error(f"TG send error: {e}")
+        logger.error(f"TG error: {e}")
 
 
 async def get_updates(session, offset=0):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates"
     try:
-        async with session.get(url, params={"offset": offset, "timeout": 30},
-                               timeout=aiohttp.ClientTimeout(total=35)) as r:
+        async with session.get(url,
+            params={"offset": offset, "timeout": 30},
+            timeout=aiohttp.ClientTimeout(total=35)) as r:
             data = await r.json()
             return data.get("result", [])
     except:
@@ -94,22 +77,20 @@ async def get_updates(session, offset=0):
 
 
 # ═══════════════════════════════════════
-# ПОЛУЧЕНИЕ ЦЕН (PUBLIC API)
+# ЦЕНЫ С БИРЖ
 # ═══════════════════════════════════════
 
-async def get_binance_prices(session) -> Dict[str, float]:
-    """Цены с Binance Spot"""
+async def get_binance_prices(session) -> Dict:
     try:
         async with session.get(
             "https://api.binance.com/api/v3/ticker/bookTicker",
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as r:
+            timeout=aiohttp.ClientTimeout(total=5)) as r:
             data = await r.json()
             prices = {}
             for item in data:
-                symbol = item.get("symbol", "")
-                if symbol.endswith(QUOTE):
-                    base = symbol[:-len(QUOTE)]
+                sym = item.get("symbol", "")
+                if sym.endswith(QUOTE):
+                    base = sym[:-len(QUOTE)]
                     if base in SYMBOLS:
                         prices[base] = {
                             "bid": float(item.get("bidPrice", 0)),
@@ -118,102 +99,79 @@ async def get_binance_prices(session) -> Dict[str, float]:
                         }
             return prices
     except Exception as e:
-        logger.error(f"Binance prices error: {e}")
+        logger.error(f"Binance: {e}")
         return {}
 
 
-async def get_bybit_prices(session) -> Dict[str, float]:
-    """Цены с Bybit Spot"""
+async def get_bybit_prices(session) -> Dict:
     try:
         async with session.get(
             "https://api.bybit.com/v5/market/tickers",
             params={"category": "spot"},
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as r:
+            timeout=aiohttp.ClientTimeout(total=5)) as r:
             data = await r.json()
             prices = {}
             for item in data.get("result", {}).get("list", []):
-                symbol = item.get("symbol", "")
-                if symbol.endswith(QUOTE):
-                    base = symbol[:-len(QUOTE)]
+                sym = item.get("symbol", "")
+                if sym.endswith(QUOTE):
+                    base = sym[:-len(QUOTE)]
                     if base in SYMBOLS:
                         prices[base] = {
-                            "bid": float(item.get("bid1Price", 0)),
-                            "ask": float(item.get("ask1Price", 0)),
+                            "bid": float(item.get("bid1Price", 0) or 0),
+                            "ask": float(item.get("ask1Price", 0) or 0),
                             "exchange": "Bybit"
                         }
             return prices
     except Exception as e:
-        logger.error(f"Bybit prices error: {e}")
+        logger.error(f"Bybit: {e}")
         return {}
 
 
-async def get_okx_prices(session) -> Dict[str, float]:
-    """Цены с OKX Spot"""
+async def get_okx_prices(session) -> Dict:
     try:
         async with session.get(
             "https://www.okx.com/api/v5/market/tickers",
             params={"instType": "SPOT"},
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as r:
+            timeout=aiohttp.ClientTimeout(total=5)) as r:
             data = await r.json()
             prices = {}
             for item in data.get("data", []):
-                inst_id = item.get("instId", "")
-                if inst_id.endswith(f"-{QUOTE}"):
-                    base = inst_id[:-len(f"-{QUOTE}")]
+                inst = item.get("instId", "")
+                if inst.endswith(f"-{QUOTE}"):
+                    base = inst[:-len(f"-{QUOTE}")]
                     if base in SYMBOLS:
                         prices[base] = {
-                            "bid": float(item.get("bidPx", 0)),
-                            "ask": float(item.get("askPx", 0)),
+                            "bid": float(item.get("bidPx", 0) or 0),
+                            "ask": float(item.get("askPx", 0) or 0),
                             "exchange": "OKX"
                         }
             return prices
     except Exception as e:
-        logger.error(f"OKX prices error: {e}")
+        logger.error(f"OKX: {e}")
         return {}
 
 
-async def get_bitget_prices(session) -> Dict[str, float]:
-    """Цены с Bitget Spot"""
+async def get_bitget_prices(session) -> Dict:
     try:
         async with session.get(
             "https://api.bitget.com/api/v2/spot/market/tickers",
-            timeout=aiohttp.ClientTimeout(total=5)
-        ) as r:
+            timeout=aiohttp.ClientTimeout(total=5)) as r:
             data = await r.json()
             prices = {}
             for item in data.get("data", []):
-                symbol = item.get("symbol", "")
-                if symbol.endswith(QUOTE):
-                    base = symbol[:-len(QUOTE)]
+                sym = item.get("symbol", "")
+                if sym.endswith(QUOTE):
+                    base = sym[:-len(QUOTE)]
                     if base in SYMBOLS:
                         prices[base] = {
-                            "bid": float(item.get("buyOne", 0)),
-                            "ask": float(item.get("sellOne", 0)),
+                            "bid": float(item.get("buyOne", 0) or 0),
+                            "ask": float(item.get("sellOne", 0) or 0),
                             "exchange": "Bitget"
                         }
             return prices
     except Exception as e:
-        logger.error(f"Bitget prices error: {e}")
+        logger.error(f"Bitget: {e}")
         return {}
-
-
-# ═══════════════════════════════════════
-# ПРОВЕРКА БАЛАНСОВ (ТРЕБУЕТ API КЛЮЧИ)
-# ═══════════════════════════════════════
-
-async def check_balances(session) -> Dict[str, float]:
-    """Проверяет балансы на биржах (симуляция если нет ключей)"""
-    if SIMULATION_MODE or not BINANCE_KEY:
-        return {
-            "Binance_USDT": 1000.0,
-            "Bybit_USDT": 1000.0,
-            "OKX_USDT": 1000.0,
-            "Bitget_USDT": 1000.0,
-        }
-    # TODO: реальные запросы с подписью
-    return {}
 
 
 # ═══════════════════════════════════════
@@ -221,62 +179,48 @@ async def check_balances(session) -> Dict[str, float]:
 # ═══════════════════════════════════════
 
 def calc_profit(buy_price, sell_price, buy_ex, sell_ex, volume_usdt):
-    """Рассчитывает чистую прибыль с учётом комиссий"""
-    buy_fee_pct  = FEES.get(buy_ex, 0.1) / 100
-    sell_fee_pct = FEES.get(sell_ex, 0.1) / 100
-
-    coins = volume_usdt / buy_price
-    buy_cost  = volume_usdt * (1 + buy_fee_pct)
-    sell_recv = coins * sell_price * (1 - sell_fee_pct)
-
-    gross_profit = sell_recv - buy_cost
-    gross_pct    = (sell_price - buy_price) / buy_price * 100
-    net_pct      = gross_pct - buy_fee_pct * 100 - sell_fee_pct * 100
-
-    return {
-        "gross_pct": round(gross_pct, 4),
-        "net_pct":   round(net_pct, 4),
-        "profit_usdt": round(gross_profit, 4),
-        "coins": round(coins, 6),
-    }
+    buy_fee  = FEES.get(buy_ex,  0.1) / 100
+    sell_fee = FEES.get(sell_ex, 0.1) / 100
+    coins    = volume_usdt / buy_price
+    buy_cost = volume_usdt * (1 + buy_fee)
+    sell_recv = coins * sell_price * (1 - sell_fee)
+    gross_pct = (sell_price - buy_price) / buy_price * 100
+    net_pct   = gross_pct - buy_fee * 100 - sell_fee * 100
+    profit    = sell_recv - buy_cost
+    return round(gross_pct, 4), round(net_pct, 4), round(profit, 4), round(coins, 6)
 
 
-def find_arbitrage(all_prices: Dict[str, Dict]) -> List[dict]:
-    """Ищет арбитражные возможности между биржами"""
+def find_arbitrage(all_prices: Dict) -> List[dict]:
     opportunities = []
+    vol = config["max_trade_usdt"]
+    min_pct = config["min_profit_pct"]
 
     for symbol, exchanges in all_prices.items():
         ex_list = list(exchanges.items())
-
         for i in range(len(ex_list)):
             for j in range(len(ex_list)):
                 if i == j:
                     continue
-
-                buy_ex,  buy_data  = ex_list[i]
-                sell_ex, sell_data = ex_list[j]
-
-                buy_price  = buy_data.get("ask", 0)
-                sell_price = sell_data.get("bid", 0)
-
+                buy_ex,  buy_d  = ex_list[i]
+                sell_ex, sell_d = ex_list[j]
+                buy_price  = buy_d.get("ask", 0)
+                sell_price = sell_d.get("bid", 0)
                 if buy_price <= 0 or sell_price <= 0:
                     continue
-
-                result = calc_profit(buy_price, sell_price, buy_ex, sell_ex, MAX_TRADE_USDT)
-
-                if result["net_pct"] >= MIN_PROFIT_PCT:
+                gross_pct, net_pct, profit, coins = calc_profit(buy_price, sell_price, buy_ex, sell_ex, vol)
+                if net_pct >= min_pct:
                     opportunities.append({
-                        "symbol":     symbol,
-                        "buy_ex":     buy_ex,
-                        "sell_ex":    sell_ex,
-                        "buy_price":  buy_price,
-                        "sell_price": sell_price,
-                        "net_pct":    result["net_pct"],
-                        "gross_pct":  result["gross_pct"],
-                        "profit_usdt": result["profit_usdt"],
-                        "coins":      result["coins"],
-                        "volume_usdt": MAX_TRADE_USDT,
-                        "time":       datetime.now().strftime("%H:%M:%S"),
+                        "symbol":      symbol,
+                        "buy_ex":      buy_ex,
+                        "sell_ex":     sell_ex,
+                        "buy_price":   buy_price,
+                        "sell_price":  sell_price,
+                        "gross_pct":   gross_pct,
+                        "net_pct":     net_pct,
+                        "profit_usdt": profit,
+                        "coins":       coins,
+                        "volume_usdt": vol,
+                        "time":        datetime.now().strftime("%H:%M:%S"),
                     })
 
     opportunities.sort(key=lambda x: x["net_pct"], reverse=True)
@@ -284,71 +228,34 @@ def find_arbitrage(all_prices: Dict[str, Dict]) -> List[dict]:
 
 
 def format_opportunity(opp: dict) -> str:
-    mode_str = "🔵 СИМУЛЯЦИЯ" if SIMULATION_MODE else "🔴 РЕАЛЬНАЯ СДЕЛКА"
+    mode_str = "🔵 СИМУЛЯЦИЯ" if config["simulation_mode"] else "🔴 РЕАЛЬНАЯ СДЕЛКА"
     return (
         f"🚨 *АРБИТРАЖ: {opp['buy_ex']} → {opp['sell_ex']}*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{mode_str}\n\n"
         f"💱 *Пара:* {opp['symbol']}/{QUOTE}\n\n"
         f"📥 *КУПИТЬ на {opp['buy_ex']}*\n"
-        f"   Цена: `{opp['buy_price']} {QUOTE}`\n"
+        f"   Цена ask: `{opp['buy_price']} {QUOTE}`\n"
         f"   Объём: `{opp['volume_usdt']} {QUOTE}`\n"
         f"   Получишь: `{opp['coins']} {opp['symbol']}`\n\n"
         f"📤 *ПРОДАТЬ на {opp['sell_ex']}*\n"
-        f"   Цена: `{opp['sell_price']} {QUOTE}`\n\n"
+        f"   Цена bid: `{opp['sell_price']} {QUOTE}`\n\n"
         f"📊 *Расчёт:*\n"
-        f"   Спред (gross): `{opp['gross_pct']}%`\n"
+        f"   Спред: `{opp['gross_pct']}%`\n"
         f"   После комиссий: `{opp['net_pct']}%`\n"
-        f"   Прибыль: `~{opp['profit_usdt']} {QUOTE}`\n\n"
-        f"⚠️ Цена актуальна только в момент получения!\n"
-        f"⚠️ Проверь баланс перед входом!\n\n"
+        f"   💰 Прибыль: `~{opp['profit_usdt']} {QUOTE}`\n\n"
+        f"⚠️ Цена актуальна только в момент получения!\n\n"
         f"🕐 {opp['time']}"
     )
 
 
 # ═══════════════════════════════════════
-# ВЫПОЛНЕНИЕ СДЕЛКИ (СИМУЛЯЦИЯ)
-# ═══════════════════════════════════════
-
-async def execute_trade(session, opp: dict):
-    """Выполняет сделку (симуляция или реальная)"""
-    trade = {
-        "id": len(trade_history) + 1,
-        "time": datetime.now().isoformat(),
-        "symbol": opp["symbol"],
-        "buy_ex": opp["buy_ex"],
-        "sell_ex": opp["sell_ex"],
-        "buy_price": opp["buy_price"],
-        "sell_price": opp["sell_price"],
-        "volume_usdt": opp["volume_usdt"],
-        "net_pct": opp["net_pct"],
-        "profit_usdt": opp["profit_usdt"],
-        "mode": "simulation" if SIMULATION_MODE else "real",
-        "status": "executed",
-    }
-
-    if SIMULATION_MODE:
-        trade_history.append(trade)
-        stats["trades_sim"] += 1
-        stats["profit_sim"] += opp["profit_usdt"]
-        logger.info(f"SIM TRADE #{trade['id']}: {opp['symbol']} {opp['buy_ex']}→{opp['sell_ex']} profit={opp['profit_usdt']:.4f}")
-        return trade, None
-
-    # Реальная торговля — TODO: добавить реальные API вызовы с подписью
-    error = "Реальная торговля требует настройки API ключей и подписей"
-    logger.warning(error)
-    return trade, error
-
-
-# ═══════════════════════════════════════
-# ОСНОВНОЙ ЦИКЛ СКАНИРОВАНИЯ
+# ОСНОВНОЙ СКАН
 # ═══════════════════════════════════════
 
 async def scan_cycle(session):
-    """Один цикл сканирования всех бирж"""
     stats["scans"] += 1
 
-    # Получаем цены параллельно
     results = await asyncio.gather(
         get_binance_prices(session),
         get_bybit_prices(session),
@@ -357,35 +264,51 @@ async def scan_cycle(session):
         return_exceptions=True
     )
 
-    # Объединяем цены по символу
-    all_prices: Dict[str, Dict] = {}
     exchange_names = ["Binance", "Bybit", "OKX", "Bitget"]
+    all_prices: Dict = {}
+    active = []
 
-    active_exchanges = []
-    for i, (ex_name, result) in enumerate(zip(exchange_names, results)):
+    for ex_name, result in zip(exchange_names, results):
         if isinstance(result, Exception) or not result:
             continue
-        active_exchanges.append(ex_name)
+        active.append(ex_name)
         for symbol, price_data in result.items():
             if symbol not in all_prices:
                 all_prices[symbol] = {}
             all_prices[symbol][ex_name] = price_data
 
-    if len(active_exchanges) < 2:
-        logger.warning(f"Только {len(active_exchanges)} бирж доступно: {active_exchanges}")
-        return [], active_exchanges
+    if len(active) < 2:
+        return [], active, {}
 
-    # Ищем арбитраж
-    opportunities = find_arbitrage(all_prices)
+    opps = find_arbitrage(all_prices)
+    if opps:
+        stats["signals"] += len(opps)
 
-    if opportunities:
-        stats["signals"] += len(opportunities)
+    return opps, active, all_prices
 
-    return opportunities, active_exchanges
+
+async def execute_sim_trade(opp: dict):
+    trade = {
+        "id":          len(trade_history) + 1,
+        "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "symbol":      opp["symbol"],
+        "buy_ex":      opp["buy_ex"],
+        "sell_ex":     opp["sell_ex"],
+        "buy_price":   opp["buy_price"],
+        "sell_price":  opp["sell_price"],
+        "volume_usdt": opp["volume_usdt"],
+        "net_pct":     opp["net_pct"],
+        "profit_usdt": opp["profit_usdt"],
+    }
+    trade_history.append(trade)
+    stats["trades_sim"]  += 1
+    stats["profit_sim"]  += opp["profit_usdt"]
+    logger.info(f"SIM #{trade['id']}: {opp['symbol']} {opp['buy_ex']}→{opp['sell_ex']} +{opp['profit_usdt']} USDT")
+    return trade
 
 
 # ═══════════════════════════════════════
-# КОМАНДЫ TELEGRAM
+# КОМАНДЫ
 # ═══════════════════════════════════════
 
 async def handle_command(session, text, chat_id):
@@ -395,7 +318,7 @@ async def handle_command(session, text, chat_id):
     cmd = parts[0].lower()
 
     if cmd == "/start":
-        mode = "🔵 СИМУЛЯЦИЯ" if SIMULATION_MODE else "🔴 РЕАЛЬНАЯ ТОРГОВЛЯ"
+        mode = "🔵 СИМУЛЯЦИЯ" if config["simulation_mode"] else "🔴 РЕАЛЬНАЯ ТОРГОВЛЯ"
         await send_tg(session,
             f"✅ *TriangleArbBot запущен!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -403,34 +326,34 @@ async def handle_command(session, text, chat_id):
             f"Площадки: Binance, Bybit, OKX, Bitget\n"
             f"Пары: BTC, ETH, SOL / USDT\n\n"
             f"⚙️ *Параметры:*\n"
-            f"   Мин. прибыль: `{MIN_PROFIT_PCT}%`\n"
-            f"   Объём сделки: `{MAX_TRADE_USDT} USDT`\n"
-            f"   Интервал скана: `{SCAN_INTERVAL} сек`\n\n"
+            f"   Мин. прибыль: `{config['min_profit_pct']}%`\n"
+            f"   Объём сделки: `{config['max_trade_usdt']} USDT`\n"
+            f"   Интервал: `{config['scan_interval']} сек`\n\n"
             f"Команды:\n"
             f"/scan — скан прямо сейчас\n"
-            f"/prices — текущие цены\n"
+            f"/prices — цены на всех биржах\n"
             f"/stats — статистика\n"
             f"/history — последние сделки\n"
-            f"/mode — переключить симуляция/реал\n"
+            f"/mode — переключить режим\n"
             f"/setprofit 0.5 — мин. прибыль %\n"
-            f"/setvolume 200 — объём сделки\n"
-            f"/help — помощь"
+            f"/setvolume 200 — объём сделки USDT\n"
         )
 
     elif cmd == "/scan":
         await send_tg(session, "🔍 Сканирую биржи...")
-        opps, active = await scan_cycle(session)
-
+        opps, active, _ = await scan_cycle(session)
         if not opps:
             await send_tg(session,
-                f"😔 Нет сигналов (порог {MIN_PROFIT_PCT}%).\n\n"
-                f"Активных бирж: {len(active)} ({', '.join(active)})\n"
-                f"Всего сканов: {stats['scans']}"
+                f"😔 Нет сигналов (порог {config['min_profit_pct']}%).\n\n"
+                f"Активных бирж: {len(active)} ({', '.join(active) or 'нет'})\n"
+                f"Сканов всего: {stats['scans']}"
             )
         else:
             await send_tg(session, f"✅ Найдено {len(opps)} возможностей:")
             for opp in opps[:3]:
                 await send_tg(session, format_opportunity(opp))
+                if config["simulation_mode"]:
+                    await execute_sim_trade(opp)
 
     elif cmd == "/prices":
         await send_tg(session, "📊 Получаю цены...")
@@ -441,110 +364,97 @@ async def handle_command(session, text, chat_id):
             get_bitget_prices(session),
             return_exceptions=True
         )
-        exchange_names = ["Binance", "Bybit", "OKX", "Bitget"]
-
-        msg = f"📊 *ЦЕНЫ — {datetime.now().strftime('%H:%M:%S')}*\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        for symbol in ["BTC", "ETH", "SOL"]:
+        ex_names = ["Binance", "Bybit", "OKX", "Bitget"]
+        msg = f"📊 *ЦЕНЫ — {datetime.now().strftime('%H:%M:%S')}*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        for symbol in SYMBOLS:
             msg += f"*{symbol}/USDT:*\n"
-            for ex_name, result in zip(exchange_names, results):
+            for ex_name, result in zip(ex_names, results):
                 if isinstance(result, Exception) or not result:
                     msg += f"   {ex_name}: —\n"
                     continue
                 data = result.get(symbol)
-                if data:
-                    msg += f"   {ex_name}: bid=`{data['bid']}` ask=`{data['ask']}`\n"
+                if data and data.get("ask", 0) > 0:
+                    msg += f"   {ex_name}: `{data['ask']}`\n"
                 else:
                     msg += f"   {ex_name}: —\n"
             msg += "\n"
-
         await send_tg(session, msg)
 
     elif cmd == "/stats":
         uptime = datetime.now() - stats["start_time"]
-        hours = int(uptime.total_seconds() // 3600)
-        minutes = int((uptime.total_seconds() % 3600) // 60)
-        mode = "Симуляция 🔵" if SIMULATION_MODE else "Реальная 🔴"
-
-        msg = (
-            f"📈 *СТАТИСТИКА*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        h = int(uptime.total_seconds() // 3600)
+        m = int((uptime.total_seconds() % 3600) // 60)
+        mode = "Симуляция 🔵" if config["simulation_mode"] else "Реальная 🔴"
+        await send_tg(session,
+            f"📈 *СТАТИСТИКА*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"Режим: {mode}\n"
-            f"Аптайм: {hours}ч {minutes}м\n\n"
+            f"Аптайм: {h}ч {m}м\n\n"
             f"🔍 Сканов: {stats['scans']}\n"
-            f"🎯 Сигналов найдено: {stats['signals']}\n"
+            f"🎯 Сигналов: {stats['signals']}\n"
             f"✅ Сделок (симуляция): {stats['trades_sim']}\n"
             f"💰 Прибыль (симуляция): {round(stats['profit_sim'], 2)} USDT\n"
             f"❌ Ошибок: {stats['errors']}\n\n"
-            f"⚙️ Мин. прибыль: {MIN_PROFIT_PCT}%\n"
-            f"⚙️ Объём: {MAX_TRADE_USDT} USDT\n"
-            f"⚙️ Интервал: {SCAN_INTERVAL} сек"
+            f"⚙️ Мин. прибыль: {config['min_profit_pct']}%\n"
+            f"⚙️ Объём: {config['max_trade_usdt']} USDT\n"
+            f"⚙️ Интервал: {config['scan_interval']} сек"
         )
-        await send_tg(session, msg)
 
     elif cmd == "/history":
         if not trade_history:
-            await send_tg(session, "📋 Нет сделок.")
+            await send_tg(session, "📋 Нет сделок в этой сессии.")
             return
         msg = "📋 *ПОСЛЕДНИЕ СДЕЛКИ*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         for t in trade_history[-10:][::-1]:
             sign = "+" if t["profit_usdt"] > 0 else ""
             msg += (
-                f"#{t['id']} {t['symbol']} | {t['buy_ex']}→{t['sell_ex']}\n"
+                f"#{t['id']} *{t['symbol']}* | {t['buy_ex']}→{t['sell_ex']}\n"
                 f"   {sign}{t['net_pct']}% | {sign}{t['profit_usdt']} USDT\n"
-                f"   {t['time'][:19]}\n\n"
+                f"   {t['time']}\n\n"
             )
         await send_tg(session, msg)
 
     elif cmd == "/mode":
-        global SIMULATION_MODE
-        SIMULATION_MODE = not SIMULATION_MODE
-        mode = "🔵 СИМУЛЯЦИЯ" if SIMULATION_MODE else "🔴 РЕАЛЬНАЯ ТОРГОВЛЯ"
-        await send_tg(session,
-            f"Режим переключён: {mode}\n\n"
-            + ("⚠️ В реальном режиме нужны API ключи!" if not SIMULATION_MODE else "")
-        )
+        config["simulation_mode"] = not config["simulation_mode"]
+        mode = "🔵 СИМУЛЯЦИЯ" if config["simulation_mode"] else "🔴 РЕАЛЬНАЯ ТОРГОВЛЯ"
+        warning = "\n\n⚠️ Для реальной торговли нужны API ключи бирж!" if not config["simulation_mode"] else ""
+        await send_tg(session, f"Режим переключён: {mode}{warning}")
 
     elif cmd == "/setprofit":
         if len(parts) < 2:
-            await send_tg(session, "Пример: /setprofit 0.5")
+            await send_tg(session, "⚠️ Пример: `/setprofit 0.5`")
             return
         try:
-            MIN_PROFIT_PCT = float(parts[1])
-            await send_tg(session, f"✅ Мин. прибыль: {MIN_PROFIT_PCT}%")
+            config["min_profit_pct"] = float(parts[1])
+            await send_tg(session, f"✅ Мин. прибыль: `{config['min_profit_pct']}%`")
         except:
-            await send_tg(session, "❌ Неверное значение")
+            await send_tg(session, "❌ Неверное значение. Пример: `/setprofit 0.5`")
 
     elif cmd == "/setvolume":
         if len(parts) < 2:
-            await send_tg(session, "Пример: /setvolume 200")
+            await send_tg(session, "⚠️ Пример: `/setvolume 200`")
             return
         try:
-            MAX_TRADE_USDT = float(parts[1])
-            await send_tg(session, f"✅ Объём сделки: {MAX_TRADE_USDT} USDT")
+            config["max_trade_usdt"] = float(parts[1])
+            await send_tg(session, f"✅ Объём сделки: `{config['max_trade_usdt']} USDT`")
         except:
-            await send_tg(session, "❌ Неверное значение")
+            await send_tg(session, "❌ Неверное значение. Пример: `/setvolume 200`")
 
-    elif cmd == "/help":
+    else:
         await send_tg(session,
-            "🤖 *TriangleArbBot — Справка*\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "/start — запуск и статус\n"
-            "/scan — сканировать биржи сейчас\n"
-            "/prices — текущие цены на всех биржах\n"
-            "/stats — статистика работы\n"
-            "/history — последние 10 сделок\n"
-            "/mode — симуляция ↔ реальная торговля\n"
-            "/setprofit 0.3 — минимальная прибыль %\n"
-            "/setvolume 500 — объём одной сделки USDT\n\n"
-            "⚠️ По умолчанию работает в режиме симуляции.\n"
-            "Для реальной торговли нужны API ключи."
+            "❓ Неизвестная команда.\n\n"
+            "/start — статус и параметры\n"
+            "/scan — сканировать биржи\n"
+            "/prices — текущие цены\n"
+            "/stats — статистика\n"
+            "/history — последние сделки\n"
+            "/mode — режим симуляция/реал\n"
+            "/setprofit 0.3 — мин. прибыль %\n"
+            "/setvolume 100 — объём USDT"
         )
 
 
 # ═══════════════════════════════════════
-# ОСНОВНЫЕ ЦИКЛЫ
+# ЦИКЛЫ
 # ═══════════════════════════════════════
 
 async def polling_loop(session):
@@ -564,35 +474,29 @@ async def polling_loop(session):
 
 
 async def scan_loop(session):
-    """Основной цикл сканирования каждые N секунд"""
     await asyncio.sleep(15)
     last_signal_time = {}
 
     while True:
         try:
-            opps, active = await scan_cycle(session)
+            opps, active, _ = await scan_cycle(session)
+            logger.info(f"Scan #{stats['scans']}: active={active} opps={len(opps)}")
 
-            for opp in opps:
+            for opp in opps[:3]:
                 key = f"{opp['symbol']}-{opp['buy_ex']}-{opp['sell_ex']}"
-                last_sent = last_signal_time.get(key, 0)
                 now = datetime.now().timestamp()
-
-                # Не спамить одним и тем же сигналом чаще раз в 60 сек
-                if now - last_sent > 60:
+                if now - last_signal_time.get(key, 0) > 60:
                     last_signal_time[key] = now
                     if CHAT_ID:
                         await send_tg(session, format_opportunity(opp))
-
-                    # Исполняем сделку (симуляция)
-                    trade, err = await execute_trade(session, opp)
-                    if err:
-                        logger.error(f"Trade error: {err}")
+                    if config["simulation_mode"]:
+                        await execute_sim_trade(opp)
 
         except Exception as e:
             stats["errors"] += 1
             logger.error(f"Scan loop error: {e}")
 
-        await asyncio.sleep(SCAN_INTERVAL)
+        await asyncio.sleep(config["scan_interval"])
 
 
 async def main():
@@ -600,8 +504,8 @@ async def main():
         logger.error("ARB_BOT_TOKEN не установлен!")
         return
 
-    mode = "СИМУЛЯЦИЯ" if SIMULATION_MODE else "РЕАЛЬНАЯ ТОРГОВЛЯ"
-    logger.info(f"TriangleArbBot запущен | {mode} | порог {MIN_PROFIT_PCT}%")
+    mode = "СИМУЛЯЦИЯ" if config["simulation_mode"] else "РЕАЛЬНАЯ"
+    logger.info(f"TriangleArbBot запущен | {mode} | порог {config['min_profit_pct']}%")
 
     connector = aiohttp.TCPConnector(ssl=False)
     async with aiohttp.ClientSession(connector=connector) as session:
